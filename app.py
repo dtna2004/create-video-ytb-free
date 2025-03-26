@@ -11,7 +11,9 @@ from utils.image_generator import ImageGenerator
 from utils.audio_generator import AudioGenerator
 from utils.video_generator import VideoGenerator
 from utils.db_utils import db_manager
+from utils.telegram_utils import telegram_manager
 import pandas as pd
+import traceback
 
 # Cấu hình trang Streamlit
 st.set_page_config(
@@ -917,7 +919,7 @@ def main():
                         "gemini": "Gemini 2.0 Flash Image Gen",
                         "stable_diffusion": "Stable Diffusion"
                     }.get(x, x),
-                    key="custom_story_image_model"
+                    key="custom_image_model"
                 )
             
             with col2:
@@ -929,7 +931,7 @@ def main():
                         "google": "Google TTS (gTTS)",
                         "openai": "OpenAI TTS"
                     }.get(x, x),
-                    key="custom_story_tts"
+                    key="custom_tts_provider"
                 )
             
             # Tùy chọn video
@@ -1021,21 +1023,9 @@ def main():
                                 # Lưu video_data vào session_state
                                 st.session_state.custom_story_video = video_data
                                 
-                                # Cập nhật đường dẫn video vào các chương
-                                if video_data and video_data.get("chapter_videos"):
-                                    for chapter_video in video_data.get("chapter_videos", []):
-                                        chapter_num = chapter_video.get("chapter_num")
-                                        video_path = chapter_video.get("video_path")
-                                        
-                                        if chapter_num and video_path:
-                                            for chapter in st.session_state.custom_chapters:
-                                                if chapter["chapter_num"] == chapter_num:
-                                                    chapter["video_path"] = video_path
-                                                    break
-                                
                                 # Lưu thông tin video vào MongoDB
-                                story_title = st.session_state.story_title
-                                series_name = st.session_state.current_series
+                                story_title = st.session_state.get("story_title", "My Story")
+                                series_name = st.session_state.get("current_series", None)
                                 
                                 video_id = db_manager.save_video_data(
                                     video_data,
@@ -1043,20 +1033,21 @@ def main():
                                     series_name
                                 )
                                 
-                                if video_id:
-                                    st.session_state.video_id_in_db = video_id
-                                    st.session_state.download_status = {
-                                        "full_video": False
-                                    }
-                                    for chapter in st.session_state.custom_chapters:
-                                        st.session_state.download_status[f"chapter_{chapter['chapter_num']}"] = False
+                                # Cập nhật video_id vào session state
+                                st.session_state.video_id_in_db = video_id
                                 
-                                if video_data and video_data.get("full_video"):
-                                    st.success("Đã tạo xong video đầy đủ và lưu vào cơ sở dữ liệu!")
+                                if video_id:
+                                    st.success(f"Đã tạo lại video thành công và lưu với ID: {video_id}")
                                 else:
-                                    st.warning("Không thể tạo video đầy đủ, nhưng có thể đã tạo được video cho một số chương.")
+                                    st.warning("Đã tạo lại video nhưng không thể lưu vào cơ sở dữ liệu.")
+                                
+                                # Hiển thị video mới
+                                display_videos(video_data, video_id)
+                                
+                                # Rerun để cập nhật UI
+                                st.rerun()
                             except Exception as e:
-                                st.error(f"Lỗi khi tạo video: {str(e)}")
+                                st.error(f"Lỗi khi tạo lại video: {str(e)}")
             
             # Hiển thị kết quả nếu có
             if 'custom_story_video' in st.session_state:
@@ -1078,150 +1069,200 @@ def main():
     """)
 
 def create_all_in_one_for_custom_chapters():
-    """Thực hiện tất cả các bước để tạo video từ các chương có sẵn"""
-    if not st.session_state.custom_chapters:
-        st.error("Không có chương nào để tạo video!")
-        return
+    """Tạo video từ các chương đã tải lên"""
+    st.header("Tạo Truyện Theo Chương Có Sẵn", divider="rainbow")
     
-    # Hiển thị khung tiến trình
-    progress_container = st.empty()
-    progress_bar = st.progress(0)
-    status_container = st.empty()
-    
-    # Tạo container hiển thị log
+    # Tạo container cho log
     log_placeholder = create_log_container()
-    update_log(log_placeholder, f"Bắt đầu quy trình tạo video từ các chương có sẵn...")
+    update_log(log_placeholder, "Bắt đầu quá trình tạo truyện và video...")
     
-    try:
-        # Sắp xếp chương theo số thứ tự
-        st.session_state.custom_chapters.sort(key=lambda x: x["chapter_num"])
+    # Form nhập thông tin
+    with st.form("custom_chapters_form"):
+        # Series info
+        series_name = st.text_input("Tên bộ truyện (không bắt buộc)", help="Nhập tên bộ truyện nếu có")
         
-        # Lấy thông tin thiết lập
-        image_model = st.session_state.custom_story_image_model
-        tts_provider = st.session_state.custom_story_tts
-        width = st.session_state.custom_story_width
-        height = st.session_state.custom_story_height
-        fps = st.session_state.custom_story_fps
+        # Truyện info
+        story_title = st.text_input("Tiêu đề truyện", help="Nhập tiêu đề cho truyện của bạn")
         
-        # Tạo thư mục output nếu chưa có
-        if 'custom_story_output_dir' not in st.session_state:
-            output_dir = create_session_directory()
+        st.write("### Nhập nội dung các chương")
+        
+        # Tạo tabs cho từng chương
+        tabs = st.tabs([f"Chương {i+1}" for i in range(5)])
+        
+        chapters_data = []
+        
+        for i, tab in enumerate(tabs):
+            with tab:
+                chapter_title = st.text_input(f"Tiêu đề chương {i+1}", value=f"Chương {i+1}", key=f"ch_title_{i}")
+                chapter_content = st.text_area(f"Nội dung chương {i+1}", height=200, key=f"ch_content_{i}")
+                
+                # Thêm dữ liệu chương vào danh sách
+                chapters_data.append({
+                    "index": i,
+                    "title": chapter_title,
+                    "content": chapter_content
+                })
+        
+        # Cấu hình
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            image_model = st.selectbox(
+                "Model tạo hình ảnh", 
+                options=["cogview4", "stable_diffusion", "gemini"],
+                index=0,
+                format_func=lambda x: {
+                    "cogview4": "CogView 4",
+                    "stable_diffusion": "Stable Diffusion",
+                    "gemini": "Gemini 2.0 Flash Image Gen"
+                }.get(x, x),
+                key="custom_image_model"
+            )
+        
+        with col2:
+            tts_provider = st.selectbox(
+                "Provider text-to-speech", 
+                options=["google", "openai"],
+                index=0,
+                format_func=lambda x: {
+                    "google": "Google TTS (gTTS)",
+                    "openai": "OpenAI TTS"
+                }.get(x, x),
+                key="custom_tts_provider"
+            )
+        
+        submit_button = st.form_submit_button("Tạo truyện và video")
+    
+    if submit_button:
+        # Kiểm tra các chương có nội dung
+        valid_chapters = [ch for ch in chapters_data if ch["content"].strip()]
+        
+        if not valid_chapters:
+            st.error("Vui lòng nhập nội dung cho ít nhất một chương!")
+            return
+        
+        if not story_title:
+            st.error("Vui lòng nhập tiêu đề truyện!")
+            return
+        
+        # Tạo thư mục đầu ra
+        output_dir = create_session_directory()
+        create_directories()
+        
+        # Lưu thông tin vào session_state
+        if "custom_story_output_dir" not in st.session_state:
             st.session_state.custom_story_output_dir = output_dir
-        else:
-            output_dir = st.session_state.custom_story_output_dir
         
-        # Tạo cấu trúc story_data
-        custom_story_data = {
-            "concept": st.session_state.story_title,
-            "num_chapters": len(st.session_state.custom_chapters),
-            "chapters": st.session_state.custom_chapters
+        # Chuẩn bị dữ liệu truyện
+        story_data = {
+            "concept": story_title,
+            "num_chapters": len(valid_chapters),
+            "chapters": []
         }
         
-        # Bước 1: Lưu story_data vào file
-        status_container.info("Bước 1/3: Đang chuẩn bị dữ liệu...")
-        update_log(log_placeholder, "Lưu dữ liệu truyện vào file")
+        for i, ch in enumerate(valid_chapters):
+            chapter_data = {
+                "chapter_num": i + 1,
+                "title": ch["title"],
+                "content": ch["content"]
+            }
+            story_data["chapters"].append(chapter_data)
         
-        story_data_path = os.path.join(output_dir, "story_data.json")
-        with open(story_data_path, "w", encoding="utf-8") as f:
-            json.dump(custom_story_data, f, ensure_ascii=False, indent=2)
+        # Lưu dữ liệu truyện
+        story_file = os.path.join(output_dir, "story_data.json")
+        with open(story_file, "w", encoding="utf-8") as f:
+            json.dump(story_data, f, ensure_ascii=False, indent=2)
         
-        progress_bar.progress(10)
+        for i, chapter in enumerate(story_data["chapters"]):
+            chapter_file = os.path.join(output_dir, f"chapter_{i+1}.txt")
+            with open(chapter_file, "w", encoding="utf-8") as f:
+                f.write(chapter["content"])
         
-        # Bước 2: Tạo hình ảnh
-        status_container.info(f"Bước 2/3: Đang tạo hình ảnh minh họa với model {image_model}...")
-        update_log(log_placeholder, f"Bắt đầu tạo hình ảnh minh họa sử dụng model {image_model}")
-        
-        image_generator = ImageGenerator(model_type=image_model)
+        update_log(log_placeholder, f"Đã lưu nội dung {len(valid_chapters)} chương.")
         
         # Xử lý tạo hình ảnh
-        story_images = image_generator.process_story(
-            custom_story_data, 
-            output_dir=output_dir
-        )
+        update_log(log_placeholder, "Đang tạo hình ảnh cho truyện...")
+        image_generator = ImageGenerator(model_type=image_model)
+        story_images = image_generator.process_story(story_data, output_dir=output_dir)
         
-        # Lưu story_images vào session_state
+        # Lưu vào session_state
         st.session_state.custom_story_images = story_images
         
-        progress_bar.progress(40)
-        update_log(log_placeholder, "✅ Đã tạo xong hình ảnh minh họa")
-        
-        # Bước 3: Tạo audio
-        status_container.info(f"Bước 3/3 (1/2): Đang tạo audio với provider {tts_provider}...")
-        update_log(log_placeholder, f"Bắt đầu tạo audio sử dụng provider {tts_provider}")
-        
-        audio_generator = AudioGenerator(provider=tts_provider)
-        story_audio = audio_generator.process_story(
-            custom_story_data, 
-            output_dir=output_dir
-        )
-        
-        # Lưu story_audio vào session_state
-        st.session_state.custom_story_audio = story_audio
-        
-        progress_bar.progress(70)
-        update_log(log_placeholder, "✅ Đã tạo xong audio")
-        
-        # Bước 4: Tạo video
-        status_container.info("Bước 3/3 (2/2): Đang tạo video... Quá trình này có thể mất nhiều thời gian...")
-        update_log(log_placeholder, f"Bắt đầu tạo video với kích thước {width}x{height}, {fps} FPS")
-        
-        video_generator = VideoGenerator(width=width, height=height, fps=fps)
-        video_data = video_generator.create_full_video(
-            custom_story_data,
-            story_images,
-            story_audio,
-            output_dir=output_dir
-        )
-        
-        # Lưu video_data vào session_state
-        st.session_state.custom_story_video = video_data
-        
-        # Cập nhật đường dẫn video vào các chương
-        if video_data and video_data.get("chapter_videos"):
-            for chapter_video in video_data.get("chapter_videos", []):
-                chapter_num = chapter_video.get("chapter_num")
-                video_path = chapter_video.get("video_path")
-                
-                if chapter_num and video_path:
-                    for chapter in st.session_state.custom_chapters:
-                        if chapter["chapter_num"] == chapter_num:
-                            chapter["video_path"] = video_path
-                            break
+        # Xử lý tạo audio
+        update_log(log_placeholder, "Đang tạo audio cho truyện...")
+        try:
+            audio_generator = AudioGenerator(provider=tts_provider)
+            story_audio = audio_generator.process_story(story_data, output_dir=output_dir)
             
-            # Lưu thông tin video vào MongoDB
-            story_title = st.session_state.story_title
-            series_name = st.session_state.current_series
-            
-            video_id = db_manager.save_video_data(
-                video_data,
-                story_title,
-                series_name
+            # Xử lý tạo video
+            update_log(log_placeholder, "Đang tạo video cho truyện...")
+            video_generator = VideoGenerator()
+            video_data = video_generator.create_full_video(
+                story_data, 
+                story_images, 
+                story_audio, 
+                output_dir=output_dir
             )
             
-            st.session_state.video_id_in_db = video_id
+            # Lưu thông tin vào session_state
+            st.session_state.custom_story_video = video_data
             
-            st.success("Đã tạo xong video đầy đủ và lưu vào cơ sở dữ liệu!")
-        else:
-            st.warning("Không thể tạo video đầy đủ, nhưng có thể đã tạo được video cho một số chương.")
-        
-        # Đánh giá kết quả
-        update_log(log_placeholder, "===== KẾT QUẢ CUỐI CÙNG =====")
-        update_log(log_placeholder, f"- Số chương đã tạo: {len(st.session_state.custom_chapters)}")
-        total_images = sum(len(chapter.get('images', [])) for chapter in story_images)
-        update_log(log_placeholder, f"- Tổng số hình ảnh: {total_images}")
-        update_log(log_placeholder, f"- Đã lưu vào cơ sở dữ liệu: ID = {video_id}")
-        update_log(log_placeholder, f"- Thời gian hoàn thành: {time.strftime('%H:%M:%S', time.localtime())}")
-        
-        # Hiển thị video kết quả
-        if 'custom_story_video' in st.session_state:
-            display_videos(st.session_state.custom_story_video, st.session_state.video_id_in_db)
-    
-    except Exception as e:
-        progress_container.empty()
-        status_container.error(f"❌ Lỗi: {str(e)}")
-        update_log(log_placeholder, f"❌ Lỗi: {str(e)}")
-        st.exception(e)
-        st.info("Bạn có thể thử lại với số chương ít hơn hoặc điều chỉnh các thông số khác.")
+            # Lưu vào cơ sở dữ liệu
+            from utils.db_utils import db_manager
+            from utils.telegram_utils import telegram_manager
+            
+            # Khởi tạo video_id với giá trị mặc định
+            video_id = None
+            
+            try:
+                update_log(log_placeholder, "Đang lưu thông tin video vào cơ sở dữ liệu...")
+                
+                # Lưu vào MongoDB nếu đã kết nối
+                if db_manager.is_connected():
+                    video_id = db_manager.save_video_data(video_data, story_title, series_name)
+                    update_log(log_placeholder, f"Đã lưu vào MongoDB với ID: {video_id}")
+                
+                # Nếu MongoDB không khả dụng và Telegram được cấu hình, thử gửi qua Telegram
+                if (not video_id or not db_manager.is_connected()) and telegram_manager.is_configured():
+                    update_log(log_placeholder, "Đang gửi video lên Telegram...")
+                    
+                    # Lấy đường dẫn video đầy đủ
+                    full_video_path = video_data.get("full_video")
+                    
+                    if full_video_path and os.path.exists(full_video_path):
+                        # Tạo caption
+                        caption = f"<b>Tiêu đề:</b> {story_title}"
+                        if series_name:
+                            caption += f"\n<b>Bộ truyện:</b> {series_name}"
+                        
+                        # Gửi video lên Telegram
+                        message_id = telegram_manager.send_video(full_video_path, caption)
+                        
+                        if message_id:
+                            update_log(log_placeholder, f"Đã gửi video thành công lên Telegram với ID: {message_id}")
+                            # Gán video_id nếu chưa có từ save_video_data
+                            if not video_id:
+                                video_id = f"tg_{message_id}"
+                        else:
+                            update_log(log_placeholder, "Không thể gửi video lên Telegram.")
+                    else:
+                        update_log(log_placeholder, f"Không tìm thấy file video đầy đủ tại: {full_video_path}")
+                
+                # Lưu ID vào session state
+                if video_id:
+                    st.session_state.video_id_in_db = video_id
+                
+            except Exception as e:
+                update_log(log_placeholder, f"Lỗi khi lưu video: {str(e)}")
+            
+            # Hiển thị video mới
+            display_videos(video_data, video_id if video_id else None)
+            
+            # Rerun để cập nhật UI
+            st.rerun()
+        except Exception as e:
+            update_log(log_placeholder, f"Lỗi: {str(e)}")
+            update_log(log_placeholder, f"Traceback: {traceback.format_exc()}")
 
 def display_frames(video_data, story_images, output_dir):
     """Hiển thị các frame hình ảnh, prompt và nút tạo lại ảnh"""
@@ -1268,7 +1309,7 @@ def display_frames(video_data, story_images, output_dir):
                                     with st.spinner("Đang tạo lại hình ảnh..."):
                                         try:
                                             # Lấy model từ session state hoặc mặc định
-                                            image_model = st.session_state.get("custom_story_image_model", "gemini")
+                                            image_model = st.session_state.get("custom_image_model", "gemini")
                                             
                                             # Khởi tạo ImageGenerator
                                             image_generator = ImageGenerator(model_type=image_model)
@@ -1322,9 +1363,9 @@ def display_frames(video_data, story_images, output_dir):
                 if story_data and story_audio and story_images:
                     # Tạo lại video
                     video_data = video_generator.create_full_video(
-                        story_data,
-                        story_images,
-                        story_audio,
+                        story_data, 
+                        story_images, 
+                        story_audio, 
                         output_dir=output_dir
                     )
                     
@@ -1335,18 +1376,55 @@ def display_frames(video_data, story_images, output_dir):
                     story_title = st.session_state.get("story_title", "My Story")
                     series_name = st.session_state.get("current_series", None)
                     
-                    video_id = db_manager.save_video_data(
-                        video_data,
-                        story_title,
-                        series_name
-                    )
+                    # Khởi tạo video_id
+                    video_id = None
                     
-                    st.session_state.video_id_in_db = video_id
+                    try:
+                        # Lưu vào MongoDB nếu đã kết nối
+                        if db_manager.is_connected():
+                            video_id = db_manager.save_video_data(video_data, story_title, series_name)
+                            st.success(f"Đã lưu video vào MongoDB với ID: {video_id}")
+                        
+                        # Nếu MongoDB không khả dụng và Telegram được cấu hình, thử gửi qua Telegram
+                        if (not video_id or not db_manager.is_connected()) and telegram_manager.is_configured():
+                            st.info("Đang gửi video lên Telegram...")
+                            
+                            # Lấy đường dẫn video đầy đủ
+                            full_video_path = video_data.get("full_video")
+                            
+                            if full_video_path and os.path.exists(full_video_path):
+                                # Tạo caption
+                                caption = f"<b>Tiêu đề:</b> {story_title}"
+                                if series_name:
+                                    caption += f"\n<b>Bộ truyện:</b> {series_name}"
+                                
+                                # Gửi video lên Telegram
+                                message_id = telegram_manager.send_video(full_video_path, caption)
+                                
+                                if message_id:
+                                    st.success(f"Đã gửi video thành công lên Telegram với ID: {message_id}")
+                                    # Gán video_id nếu chưa có từ save_video_data
+                                    if not video_id:
+                                        video_id = f"tg_{message_id}"
+                                else:
+                                    st.warning("Không thể gửi video lên Telegram.")
+                            else:
+                                st.warning(f"Không tìm thấy file video đầy đủ tại: {full_video_path}")
+                        
+                        # Lưu ID vào session state
+                        if video_id:
+                            st.session_state.video_id_in_db = video_id
+                        
+                    except Exception as e:
+                        st.error(f"Lỗi khi lưu video: {str(e)}")
                     
-                    st.success("Đã tạo lại video thành công!")
+                    # Hiển thị video mới
+                    display_videos(video_data, video_id if video_id else None)
+                    
+                    # Rerun để cập nhật UI
                     st.rerun()
                 else:
-                    st.error("Thiếu dữ liệu cần thiết để tạo lại video, vui lòng kiểm tra lại.")
+                    st.error("Không có đủ dữ liệu để tạo lại video. Vui lòng tạo video trước.")
             except Exception as e:
                 st.error(f"Lỗi khi tạo lại video: {str(e)}")
 

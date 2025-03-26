@@ -7,6 +7,8 @@ from io import BytesIO
 from tqdm import tqdm
 from gtts import gTTS
 from utils.config import GOOGLE_API_KEY, OPENAI_API_KEY
+import ffmpeg
+import subprocess
 
 class AudioGenerator:
     def __init__(self, provider="google"):
@@ -122,25 +124,46 @@ class AudioGenerator:
             try:
                 from pydub import AudioSegment
                 
-                combined = AudioSegment.empty()
-                for audio_data in audio_paths:
-                    segment = AudioSegment.from_mp3(audio_data["audio_path"])
-                    combined += segment
-                
-                chapter_audio_path = os.path.join(output_dir, f"chapter_{chapter_num}_full.mp3")
-                combined.export(chapter_audio_path, format="mp3")
-                
-                return {
-                    "chapter_num": chapter_num,
-                    "segments": audio_paths,
-                    "full_audio": chapter_audio_path
-                }
+                # Kiểm tra xem ffprobe đã được cài đặt chưa
+                try:
+                    combined = AudioSegment.empty()
+                    for audio_data in audio_paths:
+                        segment = AudioSegment.from_mp3(audio_data["audio_path"])
+                        combined += segment
+                    
+                    chapter_audio_path = os.path.join(output_dir, f"chapter_{chapter_num}_full.mp3")
+                    combined.export(chapter_audio_path, format="mp3")
+                    
+                    return {
+                        "chapter_num": chapter_num,
+                        "segments": audio_paths,
+                        "full_audio": chapter_audio_path
+                    }
+                except FileNotFoundError as e:
+                    if "ffprobe" in str(e):
+                        print("Lỗi: ffprobe không được tìm thấy. Bạn cần cài đặt ffmpeg/ffprobe để ghép audio.")
+                        print("Bạn có thể tải ffmpeg từ https://ffmpeg.org/download.html")
+                        print("Hoặc sử dụng cài đặt nhanh:")
+                        print("- Windows: choco install ffmpeg")
+                        print("- Mac: brew install ffmpeg")
+                        print("- Linux: apt install ffmpeg")
+                        
+                        # Trả về kết quả không có full audio
+                        return {
+                            "chapter_num": chapter_num,
+                            "segments": audio_paths,
+                            "full_audio": None,
+                            "error": "ffprobe_not_found"
+                        }
+                    else:
+                        raise e
             except Exception as e:
                 print(f"Lỗi khi ghép audio: {e}")
                 return {
                     "chapter_num": chapter_num,
                     "segments": audio_paths,
-                    "full_audio": None
+                    "full_audio": None,
+                    "error": str(e)
                 }
         
         return {
@@ -171,4 +194,116 @@ class AudioGenerator:
         print(f"Đã tạo xong audio cho {len(story_data['chapters'])} chương.")
         print(f"Dữ liệu audio đã được lưu vào: {audio_data_path}")
         
-        return story_audio 
+        return story_audio
+    
+    def get_audio_duration(self, audio_path):
+        """Lấy độ dài của file audio"""
+        try:
+            probe = ffmpeg.probe(audio_path)
+            duration = float(probe['format']['duration'])
+            return duration
+        except Exception as e:
+            print(f"Lỗi khi lấy thời lượng audio: {e}")
+            # Trả về thời lượng mặc định nếu không thể xác định
+            return 5.0  # Ước tính thời lượng trung bình cho mỗi đoạn
+            
+    def merge_audios(self, audio_files, output_path):
+        """Ghép các file audio"""
+        if not audio_files:
+            return None
+            
+        try:
+            # Kiểm tra ffprobe có tồn tại không
+            try:
+                subprocess.run(['ffprobe', '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            except (subprocess.SubprocessError, FileNotFoundError):
+                print("CẢNH BÁO: Không tìm thấy ffprobe, cần cài đặt ffmpeg để ghép audio")
+                print("Bạn có thể tải ffmpeg từ: https://ffmpeg.org/download.html")
+                print("Hoặc sử dụng lệnh: ")
+                print("  - Windows (với Chocolatey): choco install ffmpeg")
+                print("  - macOS (với Homebrew): brew install ffmpeg")
+                print("  - Ubuntu/Debian: sudo apt-get install ffmpeg")
+                
+                # Đánh dấu lỗi để sử dụng các audio segments riêng lẻ sau này
+                return None
+            
+            # Tiếp tục nếu ffprobe tồn tại
+            temp_list_file = "temp_audio_list.txt"
+            
+            with open(temp_list_file, "w", encoding="utf-8") as f:
+                for audio_file in audio_files:
+                    f.write(f"file '{audio_file}'\n")
+            
+            subprocess.run([
+                'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+                '-i', temp_list_file, '-c', 'copy', output_path
+            ], check=True)
+            
+            # Xóa file tạm
+            if os.path.exists(temp_list_file):
+                os.remove(temp_list_file)
+                
+            return output_path
+        except Exception as e:
+            print(f"Lỗi khi ghép audio: {e}")
+            # Đánh dấu lỗi để sử dụng các audio segments riêng lẻ sau này
+            return None
+            
+    def generate_audio_for_chapter(self, chapter_data, output_dir):
+        """Tạo audio cho một chương"""
+        chapter_num = chapter_data["chapter_num"]
+        chapter_title = chapter_data["title"]
+        chapter_content = chapter_data["content"]
+        
+        # Tạo thư mục cho chapter nếu chưa tồn tại
+        chapter_output_dir = os.path.join(output_dir, f"chapter_{chapter_num}")
+        os.makedirs(chapter_output_dir, exist_ok=True)
+        
+        # Chuẩn bị dữ liệu audio
+        audio_data = {
+            "chapter_num": chapter_num,
+            "title": chapter_title,
+            "segments": [],
+            "full_audio": ""
+        }
+        
+        # Tạo audio cho title
+        title_audio_path = os.path.join(chapter_output_dir, "title.mp3")
+        self.generate_tts(chapter_title, title_audio_path)
+        
+        if os.path.exists(title_audio_path):
+            audio_data["segments"].append({
+                "text": chapter_title,
+                "audio_path": title_audio_path,
+                "is_title": True
+            })
+        
+        # Chia nội dung thành các đoạn nhỏ hơn
+        segments = self.split_content_for_tts(chapter_content)
+        
+        # Tạo audio cho từng đoạn văn
+        segment_audio_files = [title_audio_path]
+        
+        for i, segment in enumerate(segments):
+            segment_audio_path = os.path.join(chapter_output_dir, f"segment_{i+1}.mp3")
+            self.generate_tts(segment, segment_audio_path)
+            
+            if os.path.exists(segment_audio_path):
+                audio_data["segments"].append({
+                    "text": segment,
+                    "audio_path": segment_audio_path,
+                    "is_title": False
+                })
+                segment_audio_files.append(segment_audio_path)
+        
+        # Ghép các file audio lại thành 1
+        full_audio_path = os.path.join(chapter_output_dir, "full_audio.mp3")
+        result = self.merge_audios(segment_audio_files, full_audio_path)
+        
+        if result:
+            audio_data["full_audio"] = full_audio_path
+        else:
+            audio_data["error"] = True
+            print(f"Không thể ghép audio cho chương {chapter_num}, sẽ sử dụng audio segments riêng lẻ.")
+        
+        return audio_data 

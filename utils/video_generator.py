@@ -126,8 +126,8 @@ class VideoGenerator:
             print(f"Không tìm thấy dữ liệu hình ảnh cho chương {chapter_num}")
             return None
         
-        # Nếu có file audio đầy đủ cho cả chương
-        if chapter_audio.get("full_audio") and os.path.exists(chapter_audio["full_audio"]):
+        # Nếu có file audio đầy đủ cho cả chương và không có lỗi
+        if chapter_audio.get("full_audio") and os.path.exists(chapter_audio["full_audio"]) and not chapter_audio.get("error"):
             output_path = os.path.join(output_dir, f"chapter_{chapter_num}.mp4")
             
             try:
@@ -239,11 +239,88 @@ class VideoGenerator:
                 print(f"Lỗi khi tạo video cho chương {chapter_num}: {e}")
                 return None
         else:
-            # Xử lý trường hợp không có full audio
-            print(f"Không tìm thấy file audio đầy đủ cho chương {chapter_num}, sẽ ghép từ các segment")
+            # Xử lý trường hợp không có full audio (do ffprobe không có hoặc lỗi ghép audio)
+            print(f"Không tìm thấy file audio đầy đủ cho chương {chapter_num}, sẽ sử dụng audio segments")
             
-            # TODO: Xử lý trường hợp này nếu cần
-            return None
+            try:
+                output_path = os.path.join(output_dir, f"chapter_{chapter_num}.mp4")
+                
+                # Lấy danh sách hình ảnh
+                available_images = []
+                for img in chapter_images["images"]:
+                    if img.get("image_path") and os.path.exists(img["image_path"]):
+                        available_images.append(img["image_path"])
+                
+                if not available_images:
+                    print(f"Không có hình ảnh khả dụng cho chương {chapter_num}")
+                    return None
+                
+                # Lấy danh sách các audio segments
+                audio_segments = []
+                for segment in chapter_audio["segments"]:
+                    if segment.get("audio_path") and os.path.exists(segment["audio_path"]):
+                        audio_segments.append(segment)
+                
+                if not audio_segments:
+                    print(f"Không có audio segments khả dụng cho chương {chapter_num}")
+                    return None
+                
+                # Tạo clip cho từng segment
+                segment_clips = []
+                
+                num_segments = len(audio_segments)
+                num_images = len(available_images)
+                
+                print(f"Sử dụng audio segments: Phân bổ {num_images} ảnh cho {num_segments} đoạn audio")
+                
+                for i, segment in enumerate(audio_segments):
+                    # Lấy đường dẫn audio
+                    audio_path = segment["audio_path"]
+                    
+                    # Lấy độ dài audio
+                    audio_duration = self.get_audio_duration(audio_path)
+                    
+                    # Chọn hình ảnh phù hợp
+                    img_index = min(int((i / num_segments) * num_images), num_images - 1)
+                    image_path = available_images[img_index]
+                    
+                    # Resize hình ảnh
+                    resized_image = self.resize_image(image_path)
+                    
+                    # Tạo clip cho segment này
+                    image_clip = ImageClip(resized_image)
+                    audio_clip = AudioFileClip(audio_path)
+                    
+                    # Cập nhật duration cho image clip
+                    image_clip = image_clip.set_duration(audio_clip.duration)
+                    
+                    # Thêm audio vào image clip
+                    video_clip = image_clip.set_audio(audio_clip)
+                    
+                    segment_clips.append(video_clip)
+                
+                # Nối các segment clips lại với nhau
+                if segment_clips:
+                    final_clip = concatenate_videoclips(segment_clips)
+                    
+                    # Xuất video
+                    final_clip.write_videofile(
+                        output_path,
+                        fps=self.fps,
+                        codec="libx264",
+                        audio_codec="aac",
+                        temp_audiofile="temp-audio.m4a",
+                        remove_temp=True
+                    )
+                    
+                    return output_path
+                else:
+                    print(f"Không thể tạo clip cho chương {chapter_num}")
+                    return None
+                
+            except Exception as e:
+                print(f"Lỗi khi tạo video từ audio segments cho chương {chapter_num}: {e}")
+                return None
     
     def create_full_video(self, story_data, story_images, story_audio, output_dir="output"):
         """Tạo video đầy đủ cho toàn bộ câu chuyện"""
