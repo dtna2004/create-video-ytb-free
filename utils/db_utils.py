@@ -3,14 +3,10 @@ import pymongo
 from dotenv import load_dotenv
 import datetime
 import json
+from utils.config import MONGODB_URI, DB_NAME, MONGODB_ENABLED
 
 # Tải các biến môi trường từ file .env
 load_dotenv(verbose=True)
-
-# Cấu hình MongoDB
-MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-DB_NAME = os.getenv('MONGODB_DB_NAME', 'auto_ytb_content')
-MONGODB_ENABLED = os.getenv('MONGODB_ENABLED', 'true').lower() == 'true'
 
 class DatabaseManager:
     def __init__(self):
