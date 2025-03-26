@@ -1,0 +1,31 @@
+# Thông tin cấu hình cá nhân và API keys
+.env
+
+# Thư mục cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Thư mục output và temp
+output/
+temp/
+
+# Thư mục và files môi trường ảo
+venv/
+env/
+.venv/
+.env/
+
+# Thư mục IDE
+.idea/
+.vscode/
+
+# Các file tạm thời của hệ thống
+.DS_Store
+Thumbs.db
+
+# File logs
+*.log
+
+# File tạm thời streamlit
+.streamlit/ 
