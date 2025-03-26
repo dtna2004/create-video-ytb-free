@@ -27,9 +27,15 @@ ZHIPUAI_API_KEY = get_env_var('ZHIPUAI_API_KEY')
 # Cấu hình MongoDB
 MONGODB_URI = get_env_var('MONGODB_URI', 'mongodb://localhost:27017/')
 DB_NAME = get_env_var('MONGODB_DB_NAME', 'auto_ytb_content')
-MONGODB_ENABLED = get_env_var('MONGODB_ENABLED', 'true').lower() == 'true'
+MONGODB_ENABLED = get_env_var('MONGODB_ENABLED', 'false').lower() == 'true'
+
+# Cấu hình Telegram Bot
+TELEGRAM_BOT_TOKEN = get_env_var('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = get_env_var('TELEGRAM_CHAT_ID')
+TELEGRAM_ENABLED = get_env_var('TELEGRAM_ENABLED', 'true').lower() == 'true'
 
 print(f"CONFIG - GOOGLE_API_KEY: {'Có giá trị' if GOOGLE_API_KEY else 'Không có giá trị'}")
+print(f"CONFIG - TELEGRAM_BOT_TOKEN: {'Có giá trị' if TELEGRAM_BOT_TOKEN else 'Không có giá trị'}")
 
 # Kiểm tra các API key cần thiết
 def validate_api_keys():
