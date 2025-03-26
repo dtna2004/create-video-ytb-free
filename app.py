@@ -1,5 +1,13 @@
 import os
 import streamlit as st
+
+# Cấu hình trang Streamlit
+st.set_page_config(
+    page_title="Tạo Truyện và Video Tự Động",
+    page_icon="🎬",
+    layout="wide"
+)
+
 import json
 import tempfile
 from PIL import Image
@@ -14,13 +22,6 @@ from utils.db_utils import db_manager
 from utils.telegram_utils import telegram_manager
 import pandas as pd
 import traceback
-
-# Cấu hình trang Streamlit
-st.set_page_config(
-    page_title="Tạo Truyện và Video Tự Động",
-    page_icon="🎬",
-    layout="wide"
-)
 
 # Hàm tạo thư mục output với ID phiên
 def create_session_directory():
@@ -760,54 +761,59 @@ def main():
         if 'video_id_in_db' not in st.session_state:
             st.session_state.video_id_in_db = None
         
+        # Thông tin chung của truyện
+        st.subheader("1. Thông tin truyện")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Tiêu đề truyện
+            if 'story_title' not in st.session_state:
+                st.session_state.story_title = "Truyện từ chương có sẵn"
+                
+            st.text_input("Tiêu đề truyện", value=st.session_state.story_title, 
+                        key="story_title_input", 
+                        on_change=lambda: setattr(st.session_state, 'story_title', st.session_state.story_title_input))
+        
+        with col2:
+            # Bộ truyện
+            # Hiển thị danh sách bộ truyện
+            series_list = db_manager.get_all_series()
+            series_names = ["Không thuộc bộ nào"] + [series["name"] for series in series_list]
+            selected_series = st.selectbox(
+                "Chọn bộ truyện", 
+                options=series_names, 
+                index=0,
+                key="series_selection_tab7"
+            )
+            
+            if selected_series != "Không thuộc bộ nào":
+                st.session_state.current_series = selected_series
+            else:
+                st.session_state.current_series = None
+        
         # Quản lý bộ truyện
         with st.expander("Quản lý bộ truyện", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                # Hiển thị danh sách bộ truyện
-                series_list = db_manager.get_all_series()
-                series_names = ["Không thuộc bộ nào"] + [series["name"] for series in series_list]
-                selected_series = st.selectbox(
-                    "Chọn bộ truyện", 
-                    options=series_names, 
-                    index=0
-                )
+            # Form thêm bộ truyện mới
+            with st.form("add_series_form", clear_on_submit=True):
+                new_series_name = st.text_input("Tên bộ truyện mới")
+                series_desc = st.text_area("Mô tả", height=100)
                 
-                if selected_series != "Không thuộc bộ nào":
-                    st.session_state.current_series = selected_series
-                else:
-                    st.session_state.current_series = None
-                
-            with col2:
-                # Form thêm bộ truyện mới
-                with st.form("add_series_form", clear_on_submit=True):
-                    new_series_name = st.text_input("Tên bộ truyện mới")
-                    series_desc = st.text_area("Mô tả", height=100)
-                    
-                    submitted = st.form_submit_button("Thêm bộ truyện")
-                    if submitted and new_series_name:
-                        db_manager.save_series(new_series_name, series_desc)
-                        st.success(f"Đã thêm bộ truyện '{new_series_name}'")
-                        st.rerun()
-        
-        # Tiêu đề truyện
-        if 'story_title' not in st.session_state:
-            st.session_state.story_title = "Truyện từ chương có sẵn"
-            
-        st.text_input("Tiêu đề truyện", value=st.session_state.story_title, 
-                     key="story_title_input", 
-                     on_change=lambda: setattr(st.session_state, 'story_title', st.session_state.story_title_input))
+                submitted = st.form_submit_button("Thêm bộ truyện")
+                if submitted and new_series_name:
+                    db_manager.save_series(new_series_name, series_desc)
+                    st.success(f"Đã thêm bộ truyện '{new_series_name}'")
+                    st.rerun()
         
         # Hiển thị bảng quản lý chương
+        st.subheader("2. Quản lý chương")
+        
         if st.session_state.custom_chapters:
-            st.subheader("Quản lý chương")
-            
             # Chuẩn bị dữ liệu cho DataFrame
             chapter_data = []
             for chapter in st.session_state.custom_chapters:
-                # Lấy 10 ký tự đầu tiên của nội dung
-                preview = chapter["content"][:10] + "..." if len(chapter["content"]) > 10 else chapter["content"]
+                # Lấy 30 ký tự đầu tiên của nội dung
+                preview = chapter["content"][:30] + "..." if len(chapter["content"]) > 30 else chapter["content"]
                 
                 # Trạng thái video
                 has_video = "✅" if chapter.get("video_path") and os.path.exists(chapter.get("video_path")) else "❌"
@@ -827,27 +833,28 @@ def main():
             df = pd.DataFrame(chapter_data)
             st.dataframe(df, use_container_width=True)
             
-            # Nút xóa tất cả chương
-            col1, col2 = st.columns([1, 4])
+            # Nút xóa tất cả chương hoặc tạo video
+            col1, col2 = st.columns([1, 2])
             with col1:
-                if st.button("🗑️ Xóa tất cả chương"):
+                if st.button("🗑️ Xóa tất cả chương", key="delete_all_chapters_btn"):
                     st.session_state.custom_chapters = []
                     st.success("Đã xóa tất cả chương!")
                     st.rerun()
-            with col2:
-                # Nút tạo video một nhấp
-                if st.button("🚀 Tạo video (tất cả các bước)"):
-                    if not st.session_state.custom_chapters:
-                        st.error("Không có chương nào để tạo video!")
-                    else:
-                        create_all_in_one_for_custom_chapters()
+        else:
+            st.info("Chưa có chương nào được thêm. Hãy thêm chương mới bên dưới.")
         
         # Form thêm chương mới
+        st.subheader("3. Thêm chương mới")
+        
         with st.form("add_chapter_form"):
-            st.subheader("Thêm chương mới")
+            col1, col2 = st.columns([1, 2])
             
-            chapter_num = st.number_input("Số thứ tự chương", min_value=1, value=len(st.session_state.custom_chapters) + 1)
-            chapter_title = st.text_input("Tiêu đề chương", value=f"Chương {chapter_num}")
+            with col1:
+                chapter_num = st.number_input("Số thứ tự chương", min_value=1, value=len(st.session_state.custom_chapters) + 1)
+            
+            with col2:
+                chapter_title = st.text_input("Tiêu đề chương", value=f"Chương {chapter_num}")
+            
             chapter_content = st.text_area("Nội dung chương", height=200)
             
             # Nút thêm chương
@@ -872,15 +879,17 @@ def main():
                         st.rerun()
         
         # Nút xóa chương được chọn
-        with st.expander("Xóa chương"):
-            if st.session_state.custom_chapters:
+        if st.session_state.custom_chapters:
+            with st.expander("Xóa chương cụ thể", expanded=False):
+                # Hiển thị danh sách chương
                 chapter_to_delete = st.selectbox(
                     "Chọn chương cần xóa", 
                     options=[ch["chapter_num"] for ch in st.session_state.custom_chapters],
-                    format_func=lambda x: f"Chương {x}"
+                    format_func=lambda x: f"Chương {x}",
+                    key="chapter_to_delete_select"
                 )
                 
-                if st.button("Xóa chương đã chọn"):
+                if st.button("Xóa chương đã chọn", key="delete_chapter_btn"):
                     # Tìm và xóa chương khỏi danh sách
                     for i, chapter in enumerate(st.session_state.custom_chapters):
                         if chapter["chapter_num"] == chapter_to_delete:
@@ -889,8 +898,6 @@ def main():
                             st.success(f"Đã xóa chương {chapter_to_delete}")
                             st.rerun()
                             break
-            else:
-                st.info("Chưa có chương nào để xóa.")
         
         # Tạo story_data từ các chương đã nhập
         if st.session_state.custom_chapters:
@@ -905,53 +912,59 @@ def main():
             }
             
             # Tạo video cho từng chương
-            st.subheader("Tạo Hình ảnh, Audio và Video")
+            st.subheader("4. Tạo Hình ảnh, Audio và Video")
             
             # Cài đặt cho việc tạo media
-            col1, col2 = st.columns(2)
-            with col1:
-                image_model = st.selectbox(
-                    "Model tạo hình ảnh", 
-                    options=["cogview4", "stable_diffusion", "cogview4"],
-                    index=0,
-                    format_func=lambda x: {
-                        "cogview4": "CogView 4",
-                        "gemini": "Gemini 2.0 Flash Image Gen",
-                        "stable_diffusion": "Stable Diffusion"
-                    }.get(x, x),
-                    key="custom_image_model"
-                )
-            
-            with col2:
-                tts_provider = st.selectbox(
-                    "Provider text-to-speech", 
-                    options=["google", "openai"],
-                    index=0,
-                    format_func=lambda x: {
-                        "google": "Google TTS (gTTS)",
-                        "openai": "OpenAI TTS"
-                    }.get(x, x),
-                    key="custom_tts_provider"
-                )
-            
-            # Tùy chọn video
-            with st.expander("Tùy chọn video", expanded=False):
-                vcol1, vcol2 = st.columns(2)
-                with vcol1:
-                    width = st.number_input("Chiều rộng video (pixels)", 
-                                          min_value=320, max_value=1920, value=1280, step=16,
-                                          key="custom_story_width")
-                with vcol2:
-                    height = st.number_input("Chiều cao video (pixels)", 
-                                           min_value=240, max_value=1080, value=720, step=16,
-                                           key="custom_story_height")
+            with st.container():
+                st.markdown("#### Cấu hình tạo nội dung")
                 
-                fps = st.slider("Frames per second (FPS)", 
-                              min_value=15, max_value=60, value=30, step=1,
-                              key="custom_story_fps")
+                col1, col2 = st.columns(2)
+                with col1:
+                    image_model = st.selectbox(
+                        "Model tạo hình ảnh", 
+                        options=["cogview4", "stable_diffusion", "gemini"],
+                        index=0,
+                        format_func=lambda x: {
+                            "cogview4": "CogView 4",
+                            "gemini": "Gemini 2.0 Flash Image Gen",
+                            "stable_diffusion": "Stable Diffusion"
+                        }.get(x, x),
+                        key="tab7_image_model"  # Key duy nhất cho tab này
+                    )
+                
+                with col2:
+                    tts_provider = st.selectbox(
+                        "Provider text-to-speech", 
+                        options=["google", "openai"],
+                        index=0,
+                        format_func=lambda x: {
+                            "google": "Google TTS (gTTS)",
+                            "openai": "OpenAI TTS"
+                        }.get(x, x),
+                        key="tab7_tts_provider"  # Key duy nhất cho tab này
+                    )
+                
+                # Tùy chọn video
+                with st.expander("Tùy chọn video", expanded=False):
+                    vcol1, vcol2 = st.columns(2)
+                    with vcol1:
+                        width = st.number_input("Chiều rộng video (pixels)", 
+                                              min_value=320, max_value=1920, value=1280, step=16,
+                                              key="tab7_video_width")  # Key duy nhất
+                    with vcol2:
+                        height = st.number_input("Chiều cao video (pixels)", 
+                                               min_value=240, max_value=1080, value=720, step=16,
+                                               key="tab7_video_height")  # Key duy nhất
+                    
+                    fps = st.slider("Frames per second (FPS)", 
+                                  min_value=15, max_value=60, value=30, step=1,
+                                  key="tab7_video_fps")  # Key duy nhất
             
-            # Buttons cho từng bước xử lý
-            col1, col2, col3 = st.columns(3)
+            # Tạo phần xử lý với từng bước rõ ràng
+            st.markdown("#### Các bước xử lý")
+            
+            # Các bước xử lý
+            tab_steps = st.tabs(["1. Tạo hình ảnh", "2. Tạo audio", "3. Tạo video", "4. Tất cả các bước"])
             
             # Tạo output directory nếu không có
             if 'custom_story_output_dir' not in st.session_state:
@@ -960,9 +973,9 @@ def main():
             else:
                 output_dir = st.session_state.custom_story_output_dir
             
-            # Nút tạo hình ảnh
-            with col1:
-                if st.button("1. Tạo hình ảnh", key="custom_story_create_images"):
+            # Tab 1: Tạo hình ảnh
+            with tab_steps[0]:
+                if st.button("Tạo hình ảnh", key="tab7_create_images_btn"):
                     with st.spinner(f"Đang tạo hình ảnh minh họa với model {image_model}..."):
                         try:
                             # Lưu story_data vào file để dùng sau này
@@ -982,34 +995,63 @@ def main():
                             # Lưu story_images vào session_state
                             st.session_state.custom_story_images = story_images
                             st.success("Đã tạo xong hình ảnh minh họa!")
+                            
+                            # Hiển thị một số hình ảnh mẫu
+                            if story_images and len(story_images) > 0:
+                                st.subheader("Mẫu hình ảnh đã tạo")
+                                sample_images = []
+                                for chapter in story_images:
+                                    for img in chapter.get("images", [])[:2]:  # Chỉ lấy 2 hình đầu tiên mỗi chương
+                                        if img.get("image_path") and os.path.exists(img.get("image_path")):
+                                            sample_images.append(img.get("image_path"))
+                                
+                                # Hiển thị tối đa 6 hình ảnh mẫu
+                                if sample_images:
+                                    cols = st.columns(3)
+                                    for i, img_path in enumerate(sample_images[:6]):
+                                        cols[i % 3].image(img_path, use_column_width=True)
                         except Exception as e:
                             st.error(f"Lỗi khi tạo hình ảnh: {str(e)}")
             
-            # Nút tạo audio
-            with col2:
-                if st.button("2. Tạo audio", key="custom_story_create_audio"):
-                    with st.spinner(f"Đang tạo audio với provider {tts_provider}..."):
-                        try:
-                            audio_generator = AudioGenerator(provider=tts_provider)
-                            story_audio = audio_generator.process_story(
-                                custom_story_data, 
-                                output_dir=output_dir
-                            )
-                            
-                            # Lưu story_audio vào session_state
-                            st.session_state.custom_story_audio = story_audio
-                            st.success("Đã tạo xong audio!")
-                        except Exception as e:
-                            st.error(f"Lỗi khi tạo audio: {str(e)}")
+            # Tab 2: Tạo audio
+            with tab_steps[1]:
+                if 'custom_story_images' not in st.session_state:
+                    st.warning("Vui lòng tạo hình ảnh trước (bước 1)")
+                else:
+                    if st.button("Tạo audio", key="tab7_create_audio_btn"):
+                        with st.spinner(f"Đang tạo audio với provider {tts_provider}..."):
+                            try:
+                                audio_generator = AudioGenerator(provider=tts_provider)
+                                story_audio = audio_generator.process_story(
+                                    custom_story_data, 
+                                    output_dir=output_dir
+                                )
+                                
+                                # Lưu story_audio vào session_state
+                                st.session_state.custom_story_audio = story_audio
+                                st.success("Đã tạo xong audio!")
+                                
+                                # Hiển thị mẫu audio
+                                if story_audio and len(story_audio) > 0:
+                                    st.subheader("Mẫu audio đã tạo")
+                                    for chapter_audio in story_audio[:2]:  # Chỉ hiển thị 2 chương đầu
+                                        chapter_num = chapter_audio["chapter_num"]
+                                        full_audio = chapter_audio.get("full_audio")
+                                        
+                                        if full_audio and os.path.exists(full_audio):
+                                            st.write(f"**Audio cho Chương {chapter_num}:**")
+                                            st.audio(full_audio)
+                            except Exception as e:
+                                st.error(f"Lỗi khi tạo audio: {str(e)}")
             
-            # Nút tạo video
-            with col3:
-                if st.button("3. Tạo video", key="custom_story_create_video"):
-                    if 'custom_story_images' not in st.session_state:
-                        st.error("Vui lòng tạo hình ảnh trước!")
-                    elif 'custom_story_audio' not in st.session_state:
-                        st.error("Vui lòng tạo audio trước!")
-                    else:
+            # Tab 3: Tạo video
+            with tab_steps[2]:
+                if 'custom_story_images' not in st.session_state:
+                    st.warning("Vui lòng tạo hình ảnh trước (bước 1)")
+                elif 'custom_story_audio' not in st.session_state:
+                    st.warning("Vui lòng tạo audio trước (bước 2)")
+                else:
+                    if st.button("Tạo video", key="tab7_create_video_btn"):
                         with st.spinner("Đang tạo video... Quá trình này có thể mất nhiều thời gian..."):
                             try:
                                 video_generator = VideoGenerator(width=width, height=height, fps=fps)
@@ -1037,23 +1079,116 @@ def main():
                                 st.session_state.video_id_in_db = video_id
                                 
                                 if video_id:
-                                    st.success(f"Đã tạo lại video thành công và lưu với ID: {video_id}")
+                                    st.success(f"Đã tạo video thành công và lưu với ID: {video_id}")
                                 else:
-                                    st.warning("Đã tạo lại video nhưng không thể lưu vào cơ sở dữ liệu.")
+                                    st.warning("Đã tạo video nhưng không thể lưu vào cơ sở dữ liệu.")
                                 
                                 # Hiển thị video mới
-                                display_videos(video_data, video_id)
-                                
-                                # Rerun để cập nhật UI
-                                st.rerun()
+                                display_videos(video_data, video_id if video_id else None)
                             except Exception as e:
-                                st.error(f"Lỗi khi tạo lại video: {str(e)}")
+                                st.error(f"Lỗi khi tạo video: {str(e)}")
             
-            # Hiển thị kết quả nếu có
+            # Tab 4: Tất cả các bước
+            with tab_steps[3]:
+                if st.button("🚀 Tạo tất cả (hình ảnh, audio, video)", key="tab7_create_all_btn"):
+                    # Tạo container cho log
+                    log_placeholder = create_log_container()
+                    update_log(log_placeholder, "Bắt đầu quy trình tạo truyện và video...")
+                    
+                    # Hiển thị khung tiến trình
+                    progress_bar = st.progress(0)
+                    status_container = st.empty()
+                    
+                    try:
+                        # Bước 1: Tạo hình ảnh
+                        with st.spinner("Bước 1/3: Đang tạo hình ảnh minh họa..."):
+                            status_container.info("Bước 1/3: Đang tạo hình ảnh minh họa...")
+                            update_log(log_placeholder, f"Bắt đầu tạo hình ảnh với model {image_model}...")
+                            
+                            # Lưu story_data vào file
+                            story_data_path = os.path.join(output_dir, "story_data.json")
+                            with open(story_data_path, "w", encoding="utf-8") as f:
+                                json.dump(custom_story_data, f, ensure_ascii=False, indent=2)
+                            
+                            # Khởi tạo ImageGenerator
+                            image_generator = ImageGenerator(model_type=image_model)
+                            
+                            # Xử lý tạo hình ảnh
+                            story_images = image_generator.process_story(
+                                custom_story_data, 
+                                output_dir=output_dir
+                            )
+                            
+                            # Lưu story_images vào session_state
+                            st.session_state.custom_story_images = story_images
+                            progress_bar.progress(33)
+                            update_log(log_placeholder, "✅ Đã tạo xong hình ảnh minh họa!")
+                            
+                        # Bước 2: Tạo audio  
+                        with st.spinner("Bước 2/3: Đang tạo audio..."):
+                            status_container.info("Bước 2/3: Đang tạo audio...")
+                            update_log(log_placeholder, f"Bắt đầu tạo audio với provider {tts_provider}...")
+                            
+                            audio_generator = AudioGenerator(provider=tts_provider)
+                            story_audio = audio_generator.process_story(
+                                custom_story_data, 
+                                output_dir=output_dir
+                            )
+                            
+                            # Lưu story_audio vào session_state
+                            st.session_state.custom_story_audio = story_audio
+                            progress_bar.progress(66)
+                            update_log(log_placeholder, "✅ Đã tạo xong audio!")
+                        
+                        # Bước 3: Tạo video
+                        with st.spinner("Bước 3/3: Đang tạo video..."):
+                            status_container.info("Bước 3/3: Đang tạo video... Quá trình này có thể mất nhiều thời gian...")
+                            update_log(log_placeholder, f"Bắt đầu tạo video với kích thước {width}x{height}, {fps} FPS...")
+                            
+                            video_generator = VideoGenerator(width=width, height=height, fps=fps)
+                            video_data = video_generator.create_full_video(
+                                custom_story_data,
+                                story_images,
+                                story_audio,
+                                output_dir=output_dir
+                            )
+                            
+                            # Lưu video_data vào session_state
+                            st.session_state.custom_story_video = video_data
+                            
+                            # Lưu thông tin video vào MongoDB
+                            story_title = st.session_state.get("story_title", "My Story")
+                            series_name = st.session_state.get("current_series", None)
+                            
+                            video_id = db_manager.save_video_data(
+                                video_data,
+                                story_title,
+                                series_name
+                            )
+                            
+                            # Cập nhật video_id vào session state
+                            st.session_state.video_id_in_db = video_id
+                            
+                            progress_bar.progress(100)
+                            status_container.success("🎉 Hoàn thành tất cả các bước!")
+                            update_log(log_placeholder, "🎉 Hoàn thành tất cả các bước!")
+                            
+                            if video_id:
+                                update_log(log_placeholder, f"Video đã được lưu với ID: {video_id}")
+                            
+                            # Hiển thị video
+                            st.header("Kết quả video")
+                            display_videos(video_data, video_id if video_id else None)
+                            
+                    except Exception as e:
+                        status_container.error(f"❌ Lỗi: {str(e)}")
+                        update_log(log_placeholder, f"❌ Lỗi: {str(e)}")
+                        st.exception(e)
+            
+            # Hiển thị kết quả video nếu đã tạo
             if 'custom_story_video' in st.session_state:
+                st.subheader("Kết quả video đã tạo")
                 display_videos(st.session_state.custom_story_video, st.session_state.video_id_in_db)
-        else:
-            st.info("Vui lòng thêm ít nhất một chương để tạo truyện và video.")
 
     # Thông tin cuối trang
     st.markdown("---")
@@ -1204,7 +1339,7 @@ def create_all_in_one_for_custom_chapters():
                 output_dir=output_dir
             )
             
-            # Lưu thông tin vào session_state
+            # Lưu thông tin video vào session_state
             st.session_state.custom_story_video = video_data
             
             # Lưu vào cơ sở dữ liệu
@@ -1283,7 +1418,7 @@ def display_frames(video_data, story_images, output_dir):
         with tabs[i]:
             images = chapter_images.get("images", [])
             if not images:
-                st.warning(f"Không có hình ảnh nào cho {chapter_titles[i]}")
+                st.warning(f"Không có hình ảnh cho {chapter_titles[i]}")
                 continue
             
             # Hiển thị lưới hình ảnh, 3 ảnh mỗi hàng
